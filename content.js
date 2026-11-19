@@ -1,108 +1,164 @@
-let isAdActive = false;
-let restoreTimer = null;
+let isAdPresent = false;
+let loggedRateForCurrentAd = false;
+let mutedAdVideo = null;
 
-console.log("[Prime Ad Speedup] Script injected in frame:", window.location.href);
+console.log("[Prime Ad Speedup] Script active on:", window.location.href);
 
-function detectAmazonAd() {
+function isWebPlayerOpen() {
+  const playerRoot = document.querySelector(
+    "#dv-web-player, .atvwebplayersdk-overlays-container, [class*='atvwebplayersdk-player']"
+  );
+  if (!playerRoot) return false;
+
+  const rect = playerRoot.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+// Returns remaining ad seconds, or -1 if no ad is present on screen at all
+function getRemainingAdSeconds() {
   const timerSpan = document.querySelector(".atvwebplayersdk-ad-timer-remaining-time");
-  if (timerSpan && timerSpan.textContent.trim().length > 0) {
-    return true;
+  if (timerSpan) {
+    const text = timerSpan.textContent.trim();
+    const parts = text.split(":");
+    if (parts.length === 2) {
+      const mins = parseInt(parts.at(0), 10);
+      const secs = parseInt(parts.at(1), 10);
+      if (!isNaN(mins) && !isNaN(secs)) {
+        return mins * 60 + secs;
+      }
+    }
+    return 0;
   }
 
   const ariaAd = document.querySelector('[aria-label^="Ad playing"]');
   if (ariaAd) {
-    return true;
+    const label = ariaAd.getAttribute("aria-label") || "";
+    const minMatch = label.match(/(\d+)\s+minute/i);
+    const secMatch = label.match(/(\d+)\s+second/i);
+    if (minMatch || secMatch) {
+      const mins = minMatch ? parseInt(minMatch.at(1), 10) : 0;
+      const secs = secMatch ? parseInt(secMatch.at(1), 10) : 0;
+      return mins * 60 + secs;
+    }
+    return 0;
   }
 
-  return false;
+  return -1;
 }
 
 function getAllVideos() {
-  return Array.from(document.querySelectorAll("video")).filter(
-    (v) => v.readyState >= 2 || v.src || v.currentSrc
-  );
+  return Array.from(document.querySelectorAll("video"));
 }
 
-function setSafePlaybackRate(video, preferredRates) {
+function setSpeedToOne(video) {
+  if (!video) return;
+  if (video.playbackRate !== 1) {
+    try {
+      video.playbackRate = 1;
+    } catch (_) {}
+  }
+}
+
+function setVideoSpeedUp(video) {
   if (!video || video.readyState < 2) return;
 
-  for (const rate of preferredRates) {
+  const targetRates = new Array(16, 12, 10, 8, 6, 4, 2);
+  for (const rate of targetRates) {
     if (video.playbackRate === rate) return;
     try {
       video.playbackRate = rate;
-      if (video.playbackRate === rate) return;
+      if (video.playbackRate === rate) {
+        if (!loggedRateForCurrentAd) {
+          loggedRateForCurrentAd = true;
+          console.log(`[Prime Ad Speedup] Accelerating ad at ${rate}x`);
+        }
+        return;
+      }
     } catch (_) {
-      // Silently skip unsupported rates for DRM/MSE streams
+      // Try next lower speed
     }
   }
 }
 
-function enforceAdPlayback(video) {
-  if (!video.muted) {
-    video.muted = true;
-  }
-  setSafePlaybackRate(video, new Array(8, 4, 2));
-}
-
-function restoreNormalPlayback() {
+function syncPlaybackState() {
+  const remaining = getRemainingAdSeconds();
+  const adActiveNow = remaining >= 0;
+  const shouldSpeedUp = remaining > 8;
   const videos = getAllVideos();
-  videos.forEach((v) => {
-    v.muted = false;
-    if (v.volume === 0) {
-      v.volume = 1;
+
+  if (adActiveNow) {
+    if (!isAdPresent) {
+      isAdPresent = true;
+      loggedRateForCurrentAd = false;
+      console.log("[Prime Ad Speedup] Ad started -> Muting until ad disappears.");
     }
-    setSafePlaybackRate(v, new Array(1));
-  });
+
+    // 1. Keep audio muted for the ENTIRE duration of the ad (down to 0:00)
+    videos.forEach((v) => {
+      if (v.readyState >= 1) {
+        if (!v.muted) v.muted = true;
+        mutedAdVideo = v;
+      }
+    });
+
+    // 2. Speed up at 16x while >8s left, then coast at 1x for the final seconds so the show isn't skipped
+    if (shouldSpeedUp) {
+      videos.forEach(setVideoSpeedUp);
+    } else {
+      videos.forEach(setSpeedToOne);
+    }
+  } else {
+    // No ad timer/badge on screen: ensure 1x speed everywhere
+    videos.forEach(setSpeedToOne);
+
+    // Unmute only now that the ad badge/timer is completely gone
+    if (isAdPresent) {
+      isAdPresent = false;
+
+      if (mutedAdVideo && isWebPlayerOpen()) {
+        console.log("[Prime Ad Speedup] Ad completely finished -> Unmuting show.");
+        mutedAdVideo.muted = false;
+        if (mutedAdVideo.volume === 0) {
+          mutedAdVideo.volume = 1;
+        }
+      } else {
+        console.log("[Prime Ad Speedup] Player exited -> Keeping preview muted.");
+      }
+
+      mutedAdVideo = null;
+    }
+  }
 }
 
-document.addEventListener(
-  "ratechange",
-  (e) => {
-    if (isAdActive && e.target instanceof HTMLVideoElement) {
-      enforceAdPlayback(e.target);
-    }
-  },
-  true
+new Array("popstate", "hashchange", "beforeunload").forEach((navEvent) => {
+  window.addEventListener(navEvent, () => {
+    isAdPresent = false;
+    mutedAdVideo = null;
+    getAllVideos().forEach(setSpeedToOne);
+  });
+});
+
+new Array("timeupdate", "play", "playing", "loadedmetadata", "emptied", "ratechange").forEach(
+  (eventName) => {
+    document.addEventListener(
+      eventName,
+      (e) => {
+        if (!(e.target instanceof HTMLVideoElement)) return;
+        syncPlaybackState();
+      },
+      true
+    );
+  }
 );
 
 document.addEventListener(
   "volumechange",
   (e) => {
-    if (isAdActive && e.target instanceof HTMLVideoElement && !e.target.muted) {
+    if (getRemainingAdSeconds() >= 0 && e.target instanceof HTMLVideoElement && !e.target.muted) {
       e.target.muted = true;
     }
   },
   true
 );
 
-setInterval(() => {
-  const adPlaying = detectAmazonAd();
-  const videos = getAllVideos();
-
-  if (adPlaying && !isAdActive) {
-    isAdActive = true;
-    if (restoreTimer) {
-      clearInterval(restoreTimer);
-      restoreTimer = null;
-    }
-    console.log("[Prime Ad Speedup] AD DETECTED! Muting and speeding up.");
-  }
-
-  if (adPlaying) {
-    videos.forEach(enforceAdPlayback);
-  } else if (!adPlaying && isAdActive) {
-    isAdActive = false;
-    console.log("[Prime Ad Speedup] AD FINISHED! Unmuting and restoring 1x speed.");
-
-    restoreNormalPlayback();
-    let attempts = 0;
-    restoreTimer = setInterval(() => {
-      restoreNormalPlayback();
-      attempts += 1;
-      if (attempts >= 6) {
-        clearInterval(restoreTimer);
-        restoreTimer = null;
-      }
-    }, 250);
-  }
-}, 200);
+setInterval(syncPlaybackState, 100);
