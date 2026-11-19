@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Prime Video Ad Speedup",
+  "version": "1.0",
+  "description": "Mutes and speeds up Prime Video ads to 8x, then restores normal playback.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "include_globs": [
+        "*primevideo.com*",
+        "*amazon.com*",
+        "*amazon.co.uk*",
+        "*amazon.de*",
+        "*amazon.co.jp*"
+      ],
+      "all_frames": true,
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
