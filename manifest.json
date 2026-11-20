@@ -3,6 +3,9 @@
   "name": "Prime Video Ad Speedup",
   "version": "1.0",
   "description": "Mutes and speeds up Prime Video ads to 16x, then restores normal playback.",
+  "icons": {"16": "screenshots/icon16.png",
+            "48": "screenshots/icon48.png",
+            "128": "screenshots/icon128.png"},
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
